@@ -1,0 +1,603 @@
+# Shadow Caravan Lite - SINGLE FILE.
+# Save this as .github/workflows/android-build.yml in an (even empty) GitHub repo.
+# The workflow writes the whole Godot project itself, then builds the APK.
+# Download it from Actions > (run) > Artifacts > ShadowCaravanLite-apk.
+
+name: Build Android APK
+٨
+on: [push, workflow_dispatch]
+
+env:
+  GODOT_VERSION: "4.3"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate Godot project files
+        run: |
+          cat > project.godot <<'EOF_FILE_0'
+          ; Engine configuration file.
+          ; It's best edited using the editor UI and not directly,
+          ; since the parameters that go here are not all obvious.
+
+          config_version=5
+
+          [application]
+
+          config/name="Shadow Caravan Lite"
+          run/main_scene="res://main.tscn"
+          config/features=PackedStringArray("4.3", "GL Compatibility")
+          config/icon="res://icon.svg"
+
+          [display]
+
+          window/size/viewport_width=960
+          window/size/viewport_height=540
+          window/stretch/mode="canvas_items"
+          window/stretch/aspect="expand"
+          window/handheld/orientation=4
+
+          [input_devices]
+
+          pointing/emulate_touch_from_mouse=true
+
+          [rendering]
+
+          renderer/rendering_method="gl_compatibility"
+          renderer/rendering_method.mobile="gl_compatibility"
+          textures/vram_compression/import_etc2_astc=true
+          environment/defaults/default_clear_color=Color(0.02, 0.02, 0.04, 1)
+          EOF_FILE_0
+          cat > main.tscn <<'EOF_FILE_1'
+          [gd_scene load_steps=2 format=3]
+
+          [ext_resource type="Script" path="res://main.gd" id="1"]
+
+          [node name="Main" type="Node2D"]
+          script = ExtResource("1")
+          EOF_FILE_1
+          cat > main.gd <<'EOF_FILE_2'
+          extends Node2D
+          # Shadow Caravan Lite - the whole game is drawn in code (no external assets).
+
+          const GOLD := Color(0.95, 0.76, 0.31)
+          const GOLD_DIM := Color(0.66, 0.47, 0.17)
+          const EMBER := Color(0.88, 0.28, 0.14)
+          const GRAVITY := 2200.0
+          const JUMP_V := 820.0
+          const MOVE_V := 380.0
+          const MARGIN := 72.0
+
+          enum { READY, PLAY, OVER }
+
+          var state: int = READY
+          var vw := 960.0
+          var vh := 540.0
+          var ground := 390.0
+          var anim := 0.0
+          var t := 0.0
+          var dist := 0.0
+          var speed := 300.0
+          var score := 0.0
+          var best := 0
+          var new_best := false
+          var coins_got := 0
+          var hx := 240.0
+          var hh := 0.0
+          var vy := 0.0
+          var face := 1.0
+          var jump_buf := 0.0
+          var over_t := 0.0
+          var spawn_x := 0.0
+          var obs: Array[Vector4] = []    # world x, width, height, kind
+          var coins: Array[Vector2] = []  # world x, height above ground
+          var touches := {}
+          var stars := PackedVector2Array()
+          var font: Font
+          var btn_style := StyleBoxFlat.new()
+
+
+          func _ready() -> void:
+          	font = ThemeDB.fallback_font
+          	btn_style.bg_color = Color(0.09, 0.06, 0.03, 0.95)
+          	btn_style.border_color = GOLD
+          	btn_style.set_border_width_all(3)
+          	btn_style.set_corner_radius_all(18)
+          	for i in 70:
+          		stars.append(Vector2(randf(), randf() * 0.5))
+          	reset()
+          	state = READY
+
+
+          func _measure() -> void:
+          	var s := get_viewport_rect().size
+          	vw = s.x
+          	vh = s.y
+          	ground = vh - 150.0
+
+
+          func reset() -> void:
+          	_measure()
+          	state = PLAY
+          	t = 0.0
+          	dist = 0.0
+          	speed = 300.0
+          	score = 0.0
+          	coins_got = 0
+          	new_best = false
+          	hx = vw * 0.25
+          	hh = 0.0
+          	vy = 0.0
+          	jump_buf = 0.0
+          	obs.clear()
+          	coins.clear()
+          	spawn_x = vw + 400.0
+
+
+          func pad(i: int) -> Vector2:
+          	var y := vh - 76.0
+          	if i == 0:
+          		return Vector2(MARGIN + 52.0, y)
+          	if i == 1:
+          		return Vector2(MARGIN + 192.0, y)
+          	return Vector2(vw - MARGIN - 56.0, y)
+
+
+          func restart_rect() -> Rect2:
+          	return Rect2(vw * 0.5 - 130.0, vh * 0.5 + 40.0, 260.0, 66.0)
+
+
+          # ---------------------------------------------------------------- input
+
+          func _input(e: InputEvent) -> void:
+          	var tp := e as InputEventScreenTouch
+          	if tp:
+          		if tp.pressed:
+          			touches[tp.index] = tp.position
+          			_tap(tp.position)
+          		else:
+          			touches.erase(tp.index)
+          		return
+          	var dr := e as InputEventScreenDrag
+          	if dr:
+          		touches[dr.index] = dr.position
+
+
+          func _tap(p: Vector2) -> void:
+          	if state == READY:
+          		state = PLAY
+          	elif state == OVER:
+          		if over_t > 0.5 and restart_rect().grow(20.0).has_point(p):
+          			reset()
+          	elif p.x > vw * 0.55:
+          		jump_buf = 0.15
+
+
+          func _axis() -> float:
+          	var a := 0.0
+          	if Input.is_action_pressed("ui_left"):
+          		a -= 1.0
+          	if Input.is_action_pressed("ui_right"):
+          		a += 1.0
+          	for q in touches.values():
+          		var v: Vector2 = q
+          		if v.distance_to(pad(0)) < 70.0:
+          			a -= 1.0
+          		elif v.distance_to(pad(1)) < 70.0:
+          			a += 1.0
+          	return clampf(a, -1.0, 1.0)
+
+
+          # ---------------------------------------------------------------- logic
+
+          func _process(delta: float) -> void:
+          	_measure()
+          	anim += delta
+          	if state == READY:
+          		if Input.is_action_just_pressed("ui_accept"):
+          			state = PLAY
+          	elif state == PLAY:
+          		_play(minf(delta, 0.05))
+          	else:
+          		over_t += delta
+          		if over_t > 0.5 and Input.is_action_just_pressed("ui_accept"):
+          			reset()
+          	queue_redraw()
+
+
+          func _play(dt: float) -> void:
+          	t += dt
+          	speed = minf(300.0 + t * 6.0, 560.0)
+          	dist += speed * dt
+          	score += dt * 8.0
+
+          	var a := _axis()
+          	if a != 0.0:
+          		face = signf(a)
+          	hx = clampf(hx + a * MOVE_V * dt, 40.0, vw - 40.0)
+
+          	if Input.is_action_just_pressed("ui_accept") or Input.is_action_just_pressed("ui_up"):
+          		jump_buf = 0.15
+          	jump_buf = maxf(jump_buf - dt, 0.0)
+          	if jump_buf > 0.0 and hh <= 0.0:
+          		vy = JUMP_V
+          		jump_buf = 0.0
+          	vy -= GRAVITY * dt
+          	hh = maxf(hh + vy * dt, 0.0)
+          	if hh <= 0.0:
+          		vy = 0.0
+
+          	while spawn_x < dist + vw + 120.0:
+          		_spawn(spawn_x)
+
+          	var hero := Rect2(hx - 13.0, ground - hh - 42.0, 26.0, 40.0)
+          	for i in range(obs.size() - 1, -1, -1):
+          		var o: Vector4 = obs[i]
+          		var sx := o.x - dist
+          		if sx < -120.0:
+          			obs.remove_at(i)
+          		elif hero.intersects(Rect2(sx + 5.0, ground - o.z + 8.0, o.y - 10.0, o.z - 8.0)):
+          			_die()
+          			return
+
+          	var hc := Vector2(hx, ground - hh - 22.0)
+          	for i in range(coins.size() - 1, -1, -1):
+          		var c: Vector2 = coins[i]
+          		var cx := c.x - dist
+          		if cx < -60.0:
+          			coins.remove_at(i)
+          		elif hc.distance_to(Vector2(cx, ground - c.y)) < 36.0:
+          			coins.remove_at(i)
+          			coins_got += 1
+          			score += 25.0
+
+
+          func _spawn(x: float) -> void:
+          	var w := randf_range(44.0, 84.0)
+          	var h := randf_range(34.0, 58.0)
+          	obs.append(Vector4(x, w, h, float(randi() % 2)))
+          	# coin arc over the obstacle (reward for jumping)
+          	for i in 4:
+          		var f := i / 3.0
+          		coins.append(Vector2(x + w * 0.5 - 66.0 + f * 132.0, h + 34.0 + sin(f * PI) * 36.0))
+          	# coin row between this obstacle and the next one
+          	var gap := randf_range(360.0, 580.0) + speed * 0.4
+          	var ch := 30.0 if randf() < 0.7 else 110.0
+          	for i in 3:
+          		coins.append(Vector2(x + gap * 0.5 + (i - 1) * 46.0, ch))
+          	spawn_x = x + gap
+
+
+          func _die() -> void:
+          	state = OVER
+          	over_t = 0.0
+          	new_best = int(score) > best
+          	best = maxi(best, int(score))
+
+
+          # ---------------------------------------------------------------- drawing
+
+          func _draw() -> void:
+          	_sky()
+          	_dune(ground - 135.0, 34.0, 0.0045, dist * 0.05, Color(0.20, 0.10, 0.07))
+          	for i in 3:
+          		var cp := Vector2(fposmod(anim * 26.0 + i * 118.0, vw + 360.0) - 180.0, ground - 84.0)
+          		_camel(cp, 1.0, Color(0.04, 0.02, 0.04))
+          	_dune(ground - 80.0, 24.0, 0.007, dist * 0.18, Color(0.09, 0.05, 0.05))
+          	_ground()
+          	for o in obs:
+          		_draw_obs(o)
+          	for c in coins:
+          		_draw_coin(c)
+          	_hero()
+          	_hud()
+          	if state != OVER:
+          		_pads()
+          	if state == READY:
+          		draw_rect(Rect2(0.0, 0.0, vw, vh), Color(0.0, 0.0, 0.0, 0.35))
+          		_txt("SHADOW CARAVAN", 0.0, vh * 0.42, 60, GOLD, HORIZONTAL_ALIGNMENT_CENTER, vw)
+          		_txt("L  I  T  E", 0.0, vh * 0.42 + 38.0, 24, GOLD_DIM, HORIZONTAL_ALIGNMENT_CENTER, vw)
+          		_txt("TAP TO BEGIN", 0.0, vh * 0.42 + 92.0, 26, Color(GOLD, 0.65 + 0.35 * sin(anim * 4.0)), HORIZONTAL_ALIGNMENT_CENTER, vw)
+          	elif state == OVER:
+          		draw_rect(Rect2(0.0, 0.0, vw, vh), Color(0.0, 0.0, 0.0, 0.62))
+          		var cy := vh * 0.5
+          		var line2 := "BEST  " + str(best)
+          		if new_best:
+          			line2 = "NEW BEST!"
+          		_txt("GAME OVER", 0.0, cy - 85.0, 64, GOLD, HORIZONTAL_ALIGNMENT_CENTER, vw)
+          		_txt("SCORE  " + str(int(score)), 0.0, cy - 30.0, 36, Color(1.0, 0.93, 0.7), HORIZONTAL_ALIGNMENT_CENTER, vw)
+          		_txt(line2, 0.0, cy + 8.0, 24, GOLD_DIM, HORIZONTAL_ALIGNMENT_CENTER, vw)
+          		var r := restart_rect()
+          		draw_style_box(btn_style, r)
+          		_txt("RESTART", r.position.x, r.position.y + 44.0, 30, GOLD, HORIZONTAL_ALIGNMENT_CENTER, r.size.x)
+
+
+          func _txt(s: String, x: float, y: float, fs: int, col: Color, align: HorizontalAlignment = HORIZONTAL_ALIGNMENT_LEFT, width: float = -1.0) -> void:
+          	draw_string(font, Vector2(x, y), s, align, width, fs, col)
+
+
+          func _poly(pts: PackedVector2Array, fill: Color, line: Color) -> void:
+          	draw_colored_polygon(pts, fill)
+          	pts.append(pts[0])
+          	draw_polyline(pts, Color(line, 0.25), 7.0, true)
+          	draw_polyline(pts, line, 2.0, true)
+
+
+          func _sky() -> void:
+          	var pts := PackedVector2Array([Vector2(0.0, 0.0), Vector2(vw, 0.0), Vector2(vw, ground), Vector2(0.0, ground)])
+          	var top := Color(0.02, 0.02, 0.05)
+          	var low := Color(0.30, 0.15, 0.06)
+          	draw_polygon(pts, PackedColorArray([top, top, low, low]))
+          	for i in stars.size():
+          		var st := stars[i]
+          		var al := 0.35 + 0.35 * sin(anim * 1.5 + i)
+          		draw_circle(Vector2(st.x * vw, st.y * vh), 1.4, Color(1.0, 0.92, 0.7, al))
+          	var m := Vector2(vw * 0.7, 100.0)
+          	draw_circle(m, 92.0, Color(GOLD, 0.05))
+          	draw_circle(m, 66.0, Color(GOLD, 0.10))
+          	draw_circle(m, 40.0, Color(0.98, 0.88, 0.60))
+          	draw_circle(m + Vector2(-12.0, 8.0), 8.0, Color(0.85, 0.72, 0.45))
+          	draw_circle(m + Vector2(14.0, -10.0), 5.0, Color(0.85, 0.72, 0.45))
+
+
+          func _dune(base: float, amp: float, freq: float, off: float, col: Color) -> void:
+          	var pts := PackedVector2Array()
+          	var x := -10.0
+          	while x <= vw + 30.0:
+          		var y := base + sin((x + off) * freq) * amp + sin((x + off) * freq * 2.7) * amp * 0.35
+          		pts.append(Vector2(x, y))
+          		x += 30.0
+          	pts.append(Vector2(vw + 30.0, ground + 2.0))
+          	pts.append(Vector2(-10.0, ground + 2.0))
+          	draw_colored_polygon(pts, col)
+
+
+          func _camel(p: Vector2, s: float, col: Color) -> void:
+          	draw_rect(Rect2(p.x - 24.0 * s, p.y - 34.0 * s, 48.0 * s, 15.0 * s), col)
+          	draw_circle(p + Vector2(-3.0, -38.0) * s, 9.0 * s, col)
+          	draw_line(p + Vector2(20.0, -30.0) * s, p + Vector2(31.0, -53.0) * s, col, 6.0 * s)
+          	draw_circle(p + Vector2(35.0, -54.0) * s, 5.5 * s, col)
+          	for k in 4:
+          		var lx := -18.0 + k * 12.0
+          		draw_line(p + Vector2(lx, -22.0) * s, p + Vector2(lx + sin(anim * 5.0 + k * 1.7) * 4.0, 0.0) * s, col, 3.5 * s)
+          	var lamp := p + Vector2(-3.0, -52.0) * s
+          	draw_circle(lamp, 9.0, Color(GOLD, 0.15))
+          	draw_circle(lamp, 2.5, GOLD)
+
+
+          func _ground() -> void:
+          	draw_rect(Rect2(0.0, ground, vw, vh - ground), Color(0.08, 0.05, 0.04))
+          	draw_line(Vector2(0.0, ground), Vector2(vw, ground), Color(GOLD, 0.25), 8.0)
+          	draw_line(Vector2(0.0, ground), Vector2(vw, ground), GOLD, 2.0)
+          	var x := -fposmod(dist, 70.0)
+          	while x < vw:
+          		draw_line(Vector2(x, ground + 22.0), Vector2(x + 26.0, ground + 22.0), Color(GOLD, 0.18), 2.0)
+          		x += 70.0
+
+
+          func _draw_obs(o: Vector4) -> void:
+          	var x := o.x - dist
+          	var w := o.y
+          	var h := o.z
+          	var fill := Color(0.12, 0.06, 0.10)
+          	if int(o.w) == 0:
+          		var n := maxi(2, roundi(w / 22.0))
+          		var tw := w / n
+          		for i in n:
+          			var bx := x + i * tw
+          			_poly(PackedVector2Array([Vector2(bx, ground), Vector2(bx + tw * 0.5, ground - h), Vector2(bx + tw, ground)]), fill, EMBER)
+          	else:
+          		_poly(PackedVector2Array([Vector2(x, ground), Vector2(x + w * 0.12, ground - h * 0.8), Vector2(x + w * 0.4, ground - h), Vector2(x + w * 0.85, ground - h * 0.9), Vector2(x + w, ground)]), fill, EMBER)
+          		draw_line(Vector2(x + w * 0.5, ground - h * 0.25), Vector2(x + w * 0.5, ground - h * 0.7), GOLD, 2.0)
+
+
+          func _draw_coin(c: Vector2) -> void:
+          	var p := Vector2(c.x - dist, ground - c.y + sin(anim * 3.0 + c.x * 0.02) * 4.0)
+          	if p.x < -40.0 or p.x > vw + 40.0:
+          		return
+          	var r := 13.0
+          	var spin := maxf(absf(cos(anim * 4.0 + c.x * 0.05)), 0.25)
+          	draw_circle(p, r * 2.4, Color(GOLD, 0.10))
+          	draw_circle(p, r * 1.7, Color(GOLD, 0.18))
+          	draw_set_transform(p, 0.0, Vector2(spin, 1.0))
+          	draw_circle(Vector2.ZERO, r, GOLD)
+          	draw_circle(Vector2.ZERO, r * 0.62, GOLD_DIM)
+          	draw_circle(Vector2.ZERO, r * 0.40, GOLD)
+          	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+          func _hero() -> void:
+          	var f := face
+          	var p := Vector2(hx, ground - hh)
+          	var step := 0.0
+          	if state == PLAY and hh <= 0.0:
+          		step = sin(anim * 18.0) * 7.0
+          	# ground shadow
+          	draw_set_transform(Vector2(hx, ground + 3.0), 0.0, Vector2(1.0, 0.25))
+          	draw_circle(Vector2.ZERO, maxf(20.0 - hh * 0.08, 8.0), Color(0.0, 0.0, 0.0, 0.5))
+          	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+          	# legs
+          	var dark := Color(0.16, 0.10, 0.22)
+          	draw_line(p + Vector2(-4.0, -12.0), p + Vector2(-4.0 + step, 0.0), dark, 5.0)
+          	draw_line(p + Vector2(4.0, -12.0), p + Vector2(4.0 - step, 0.0), dark, 5.0)
+          	# scarf trailing behind
+          	var wave := sin(anim * 9.0) * 4.0
+          	draw_polyline(PackedVector2Array([p + Vector2(-f * 6.0, -30.0), p + Vector2(-f * 20.0, -27.0 + wave), p + Vector2(-f * 34.0, -31.0 - wave)]), GOLD, 4.0, true)
+          	# cloak
+          	_poly(PackedVector2Array([p + Vector2(-12.0, -8.0), p + Vector2(12.0, -8.0), p + Vector2(8.0, -33.0), p + Vector2(-8.0, -33.0)]), dark, GOLD)
+          	# hood and glowing eye
+          	draw_circle(p + Vector2(0.0, -38.0), 9.0, dark)
+          	draw_arc(p + Vector2(0.0, -38.0), 9.0, 0.0, TAU, 20, GOLD, 2.0, true)
+          	draw_circle(p + Vector2(f * 4.0, -38.0), 6.0, Color(GOLD, 0.3))
+          	draw_circle(p + Vector2(f * 4.0, -38.0), 2.2, Color(1.0, 0.9, 0.5))
+
+
+          func _hud() -> void:
+          	_txt("SCORE", MARGIN, 34.0, 18, GOLD_DIM)
+          	_txt(str(int(score)), MARGIN, 80.0, 48, GOLD)
+          	var cx := vw - MARGIN - 14.0
+          	draw_circle(Vector2(cx, 52.0), 24.0, Color(GOLD, 0.14))
+          	draw_circle(Vector2(cx, 52.0), 12.0, GOLD)
+          	draw_circle(Vector2(cx, 52.0), 7.0, GOLD_DIM)
+          	_txt(str(coins_got), 0.0, 66.0, 40, GOLD, HORIZONTAL_ALIGNMENT_RIGHT, cx - 30.0)
+          	_txt("BEST " + str(best), 0.0, 100.0, 18, GOLD_DIM, HORIZONTAL_ALIGNMENT_RIGHT, vw - MARGIN)
+
+
+          func _pads() -> void:
+          	for i in 3:
+          		var p := pad(i)
+          		var down := false
+          		for q in touches.values():
+          			var v: Vector2 = q
+          			if (i == 2 and v.x > vw * 0.55) or (i < 2 and v.distance_to(p) < 70.0):
+          				down = true
+          		var fill := Color(0.0, 0.0, 0.0, 0.40)
+          		var rim := GOLD_DIM
+          		if down:
+          			fill = Color(GOLD, 0.30)
+          			rim = GOLD
+          		draw_circle(p, 52.0, fill)
+          		draw_arc(p, 52.0, 0.0, TAU, 48, rim, 3.0, true)
+          		var tri := PackedVector2Array()
+          		if i == 0:
+          			tri = PackedVector2Array([p + Vector2(-20.0, 0.0), p + Vector2(12.0, -20.0), p + Vector2(12.0, 20.0)])
+          		elif i == 1:
+          			tri = PackedVector2Array([p + Vector2(20.0, 0.0), p + Vector2(-12.0, -20.0), p + Vector2(-12.0, 20.0)])
+          		else:
+          			tri = PackedVector2Array([p + Vector2(0.0, -20.0), p + Vector2(-22.0, 14.0), p + Vector2(22.0, 14.0)])
+          		draw_colored_polygon(tri, GOLD)
+          EOF_FILE_2
+          cat > icon.svg <<'EOF_FILE_3'
+          <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" rx="24" fill="#0b0910"/><circle cx="64" cy="54" r="30" fill="#f2c14e"/><circle cx="78" cy="46" r="26" fill="#0b0910"/><path d="M8 102 Q40 80 66 96 T120 90 V128 H8 Z" fill="#a8782a"/></svg>
+          EOF_FILE_3
+          cat > export_presets.cfg <<'EOF_FILE_4'
+          [preset.0]
+
+          name="Android"
+          platform="Android"
+          runnable=true
+          advanced_options=false
+          dedicated_server=false
+          custom_features=""
+          export_filter="all_resources"
+          include_filter=""
+          exclude_filter=""
+          export_path="build/ShadowCaravanLite.apk"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          encrypt_pck=false
+          encrypt_directory=false
+
+          [preset.0.options]
+
+          custom_template/debug=""
+          custom_template/release=""
+          gradle_build/use_gradle_build=false
+          architectures/armeabi-v7a=true
+          architectures/arm64-v8a=true
+          architectures/x86=false
+          architectures/x86_64=false
+          keystore/debug=""
+          keystore/debug_user=""
+          keystore/debug_password=""
+          keystore/release=""
+          keystore/release_user=""
+          keystore/release_password=""
+          version/code=1
+          version/name="1.0"
+          package/unique_name="com.shadowcaravan.lite"
+          package/name="Shadow Caravan Lite"
+          package/signed=true
+          package/show_in_app_library=true
+          launcher_icons/main_192x192=""
+          launcher_icons/adaptive_foreground_432x432=""
+          launcher_icons/adaptive_background_432x432=""
+          screen/immersive_mode=true
+          screen/support_small=true
+          screen/support_normal=true
+          screen/support_large=true
+          screen/support_xlarge=true
+          user_data_backup/allow=false
+          EOF_FILE_4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK packages
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          SM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SM" --sdk_root="$SDK" --licenses > /dev/null || true
+          "$SM" --sdk_root="$SDK" "platform-tools" "build-tools;34.0.0" "platforms;android-34"
+
+      - name: Install Godot and export templates
+        run: |
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          BIN="Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          curl -fsSL -o "$RUNNER_TEMP/godot.zip" "$BASE/$BIN.zip"
+          curl -fsSL -o "$RUNNER_TEMP/templates.tpz" "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
+          chmod +x "$RUNNER_TEMP/godot/$BIN"
+          echo "GODOT=$RUNNER_TEMP/godot/$BIN" >> "$GITHUB_ENV"
+          T="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          mkdir -p "$T"
+          unzip -q "$RUNNER_TEMP/templates.tpz" -d "$RUNNER_TEMP/tpl"
+          mv "$RUNNER_TEMP/tpl/templates/"* "$T/"
+          test -f "$T/android_debug.apk"
+
+      - name: Configure Godot for Android (SDK, JDK, debug keystore)
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          KS="$RUNNER_TEMP/debug.keystore"
+          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore "$KS" -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
+          mkdir -p "$HOME/.config/godot"
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/java_sdk_path = "$JAVA_HOME"
+          export/android/android_sdk_path = "$SDK"
+          export/android/debug_keystore = "$KS"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+          cp "$HOME/.config/godot/editor_settings-4.tres" "$HOME/.config/godot/editor_settings-4.3.tres"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$KS" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
+
+      - name: Import project resources
+        # The first headless import can exit non-zero even when it works;
+        # the export step below fails the build if anything is really wrong.
+        run: |
+          "$GODOT" --headless --path . --import || true
+
+      - name: Export APK
+        run: |
+          mkdir -p build
+          "$GODOT" --headless --path . --export-debug "Android" build/ShadowCaravanLite.apk
+
+      - name: Verify APK
+        run: |
+          APK=build/ShadowCaravanLite.apk
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          test -s "$APK"
+          unzip -l "$APK" | grep -q "AndroidManifest.xml"
+          unzip -l "$APK" | grep -q "lib/arm64-v8a/"
+          "$SDK/build-tools/34.0.0/apksigner" verify --verbose "$APK"
+          ls -lh "$APK"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShadowCaravanLite-apk
+          path: build/ShadowCaravanLite.apk
+          if-no-files-found: error
