@@ -1,7 +1,7 @@
 # Shadow Caravan Lite - SINGLE FILE.
 # Save this as .github/workflows/android-build.yml in an (even empty) GitHub repo.
-# The workflow writes the whole Godot project itself, then builds the APK.
-# Download it from Actions > (run) > Artifacts > ShadowCaravanLite-apk.
+# The workflow writes the whole Godot project itself, builds the APK and publishes it
+# on the repository's Releases page (Assets > ShadowCaravanLite.apk).
 
 name: Build Android APK
 
@@ -14,6 +14,8 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -601,3 +603,12 @@ jobs:
           name: ShadowCaravanLite-apk
           path: build/ShadowCaravanLite.apk
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          TAG="v1.0.$RUN_NUMBER"
+          gh release create "$TAG" build/ShadowCaravanLite.apk --target "$GITHUB_SHA" --title "Shadow Caravan Lite $TAG" --notes "Debug-signed APK built by GitHub Actions. Download ShadowCaravanLite.apk below and install it on your Android phone."
